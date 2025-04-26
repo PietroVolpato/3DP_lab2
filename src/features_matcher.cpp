@@ -37,11 +37,21 @@ void FeatureMatcher::extractFeatures()
     // Extract also the color (i.e., the cv::Vec3b information) of each feature, and store
     // it into feats_colors_[i] vector
     /////////////////////////////////////////////////////////////////////////////////////////
+    cv::Ptr<cv::ORB> orb = cv::ORB::create();
+    
+    // Detect keypoints
+    orb->detect(img, features_[i]);
 
+    // Compute descriptors
+    orb->compute(img, features_[i], descriptors_[i]);
+    feats_colors_[i].resize(features_[i].size());
 
-    
-    
-    
+    for(int j = 0; j < features_[i].size(); j++) {
+      // Get the color of the feature
+      cv::Point2f pt = features_[i][j].pt;
+      cv::Vec3b color = img.at<cv::Vec3b>(cv::Point2i(pt.x, pt.y));
+      feats_colors_[i][j] = color;
+    }
     /////////////////////////////////////////////////////////////////////////////////////////
   }
 }
@@ -70,7 +80,7 @@ void FeatureMatcher::exhaustiveMatching()
       // In case of success, set the matches with the function:
       // setMatches( i, j, inlier_matches);
       /////////////////////////////////////////////////////////////////////////////////////////
-
+      
       
       
       
