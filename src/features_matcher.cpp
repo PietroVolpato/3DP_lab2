@@ -125,7 +125,7 @@ void FeatureMatcher::exhaustiveMatching()
         std::cout << "Found " << inlier_matches.size() << " inliers" << std::endl;
         // Set the matches
         setMatches(i, j, inlier_matches);
-      } else sstd::cerr << "Not enough inliers matches" << std::endl;
+      } else std::cerr << "Not enough inliers matches" << std::endl;
 
       /////////////////////////////////////////////////////////////////////////////////////////
 
