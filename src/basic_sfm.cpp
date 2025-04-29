@@ -22,79 +22,79 @@ struct ReprojectionError
   // WARNING: When dealing with the AutoDiffCostFunction template parameters,
   // pay attention to the order of the template parameters
   //////////////////////////////////////////////////////////////////////////////////////////
-  
-    
- // Constructor takes the observed 2D point
- ReprojectionError(double observed_x, double observed_y)
- : observed_x_(observed_x), observed_y_(observed_y) {}
 
-// The auto-differentiable cost function operator
-template <typename T>
-bool operator()(const T* const camera, const T* const point, T* residuals) const {
-// Camera is a 6D vector [angle_axis, translation]
-// point is a 3D vector
+  // Constructor takes the observed 2D point
+  ReprojectionError(double observed_x, double observed_y)
+      : observed_x_(observed_x), observed_y_(observed_y) {}
 
-// Apply the angle-axis rotation to the point
-T p[3];
-ceres::AngleAxisRotatePoint(camera, point, p);
+  // The auto-differentiable cost function operator
+  template <typename T>
+  bool operator()(const T *const camera, const T *const point, T *residuals) const
+  {
+    // Camera is a 6D vector [angle_axis, translation]
+    // point is a 3D vector
 
-// Add the translation
-p[0] += camera[3];
-p[1] += camera[4];
-p[2] += camera[5];
+    // Apply the angle-axis rotation to the point
+    T p[3];
+    ceres::AngleAxisRotatePoint(camera, point, p);
 
-// Check for division by zero or negative z
-// This is critical to avoid NaN values
-if (p[2] <= T(0.0)) {
- // Point is behind the camera, return a large error
- residuals[0] = T(1000.0);
- residuals[1] = T(1000.0);
- return true;
-}
+    // Add the translation
+    p[0] += camera[3];
+    p[1] += camera[4];
+    p[2] += camera[5];
 
-// Compute the projection
-T predicted_x = p[0] / p[2];
-T predicted_y = p[1] / p[2];
+    // Check for division by zero or negative z
+    // This is critical to avoid NaN values
+    if (p[2] <= T(1e-6))
+    {
+      // Point is behind the camera, return a large error
+      residuals[0] = T(100.0); //1000
+      residuals[1] = T(100.0);
+      return true;
+    }
 
-// The error is the difference between the predicted and observed position
-residuals[0] = predicted_x - T(observed_x_);
-residuals[1] = predicted_y - T(observed_y_);
+    // Compute the projection
+    T predicted_x = p[0] / p[2];
+    T predicted_y = p[1] / p[2];
 
-return true;
-}
+    // The error is the difference between the predicted and observed position
+    residuals[0] = predicted_x - T(observed_x_);
+    residuals[1] = predicted_y - T(observed_y_);
 
-// Factory function to create the CostFunction object
-static ceres::CostFunction* Create(const double observed_x, const double observed_y) {
-return (new ceres::AutoDiffCostFunction<ReprojectionError, 2, 6, 3>(
-   new ReprojectionError(observed_x, observed_y)));
-}
+    return true;
+  }
 
-// The observed 2D point coordinates
-double observed_x_;
-double observed_y_;
-  
+  // Factory function to create the CostFunction object
+  static ceres::CostFunction *Create(const double observed_x, const double observed_y)
+  {
+    return (new ceres::AutoDiffCostFunction<ReprojectionError, 2, 6, 3>(
+        new ReprojectionError(observed_x, observed_y)));
+  }
+
+  // The observed 2D point coordinates
+  double observed_x_;
+  double observed_y_;
+
   /////////////////////////////////////////////////////////////////////////////////////////
 };
 
-
 namespace
 {
-typedef Eigen::Map<Eigen::VectorXd> VectorRef;
-typedef Eigen::Map<const Eigen::VectorXd> ConstVectorRef;
+  typedef Eigen::Map<Eigen::VectorXd> VectorRef;
+  typedef Eigen::Map<const Eigen::VectorXd> ConstVectorRef;
 
-template<typename T>
-void FscanfOrDie(FILE* fptr, const char* format, T* value)
-{
-  int num_scanned = fscanf(fptr, format, value);
-  if (num_scanned != 1)
+  template <typename T>
+  void FscanfOrDie(FILE *fptr, const char *format, T *value)
   {
-    cerr << "Invalid UW data file.";
-    exit(-1);
+    int num_scanned = fscanf(fptr, format, value);
+    if (num_scanned != 1)
+    {
+      cerr << "Invalid UW data file.";
+      exit(-1);
+    }
   }
-}
 
-}  // namespace
-
+} // namespace
 
 BasicSfM::~BasicSfM()
 {
@@ -566,56 +566,54 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
   // In case of "good" sideward motion, store the transformation into init_r_mat and  init_t_vec; defined above
   /////////////////////////////////////////////////////////////////////////////////////////
 
-  
-  
-    // Estimate the Essential matrix with RANSAC
-    double threshold = 0.001;
-    cv::Mat E = cv::findEssentialMat(points0, points1, intrinsics_matrix, cv::RANSAC, 0.999, threshold, inlier_mask_E);
-    
-    // Estimate the Homography matrix with RANSAC
-    cv::Mat H = cv::findHomography(points0, points1, cv::RANSAC, threshold, inlier_mask_H);
-    
-    // Count inliers for both models
-    int num_inliers_E = cv::countNonZero(inlier_mask_E);
-    int num_inliers_H = cv::countNonZero(inlier_mask_H);
-    
-    std::cout << "Inliers E: " << num_inliers_E << ", Inliers H: " << num_inliers_H << std::endl;
-    
-    // Check if we have more inliers for E than for H (which indicates a general 3D scene rather than a planar one)
-    if (num_inliers_E <= num_inliers_H) {
-      std::cout << "The scene appears to be planar (H has more inliers than E). Trying a new seed pair." << std::endl;
-      return false;
-    }
-    
-    // Recover rotation and translation from essential matrix
-    int num_good_pts = cv::recoverPose(E, points0, points1, intrinsics_matrix, init_r_mat, init_t_vec, inlier_mask_E);
-    
-    // Check if we have enough inliers after pose recovery
-    if (num_good_pts < 10) {
-      std::cout << "Not enough points survived pose recovery. Trying a new seed pair." << std::endl;
-      return false;
-    }
-    
-    // Check if the motion is mainly sideward rather than forward
-    // For sideward motion, the translation vector should be more horizontal than along the z-axis
-    double tx = std::abs(init_t_vec.at<double>(0));
-    double ty = std::abs(init_t_vec.at<double>(1));
-    double tz = std::abs(init_t_vec.at<double>(2));
-    
-    double lateral_motion = std::sqrt(tx*tx + ty*ty);
-    
-    // If forward motion dominates (z-component is larger than lateral components)
-    if (tz > lateral_motion) {
-      std::cout << "Motion appears to be mainly forward. Sideward motion is preferred. Trying a new seed pair." << std::endl;
-      return false;
-    }
-    
-    std::cout << "Found good seed pair with sideward motion." << std::endl;
-    // The matrices init_r_mat and init_t_vec are already set by recoverPose, 
-    // so we don't need to do anything else here
-  
-  
-  
+  // Estimate the Essential matrix with RANSAC
+  double threshold = 0.001;
+  cv::Mat E = cv::findEssentialMat(points0, points1, intrinsics_matrix, cv::RANSAC, 0.999, threshold, inlier_mask_E);
+
+  // Estimate the Homography matrix with RANSAC
+  cv::Mat H = cv::findHomography(points0, points1, cv::RANSAC, threshold, inlier_mask_H);
+
+  // Count inliers for both models
+  int num_inliers_E = cv::countNonZero(inlier_mask_E);
+  int num_inliers_H = cv::countNonZero(inlier_mask_H);
+
+  std::cout << "Inliers E: " << num_inliers_E << ", Inliers H: " << num_inliers_H << std::endl;
+
+  // Check if we have more inliers for E than for H (which indicates a general 3D scene rather than a planar one)
+  if (num_inliers_E <= num_inliers_H)
+  {
+    std::cout << "The scene appears to be planar (H has more inliers than E). Trying a new seed pair." << std::endl;
+    return false;
+  }
+
+  // Recover rotation and translation from essential matrix
+  int num_good_pts = cv::recoverPose(E, points0, points1, intrinsics_matrix, init_r_mat, init_t_vec, inlier_mask_E);
+
+  // Check if we have enough inliers after pose recovery
+  if (num_good_pts < 10)
+  {
+    std::cout << "Not enough points survived pose recovery. Trying a new seed pair." << std::endl;
+    return false;
+  }
+
+  // Check if the motion is mainly sideward rather than forward
+  // For sideward motion, the translation vector should be more horizontal than along the z-axis
+  double tx = std::abs(init_t_vec.at<double>(0));
+  double ty = std::abs(init_t_vec.at<double>(1));
+  double tz = std::abs(init_t_vec.at<double>(2));
+
+  double lateral_motion = std::sqrt(tx * tx + ty * ty);
+
+  // If forward motion dominates (z-component is larger than lateral components)
+  if (tz > lateral_motion)
+  {
+    std::cout << "Motion appears to be mainly forward. Sideward motion is preferred. Trying a new seed pair." << std::endl;
+    return false;
+  }
+
+  std::cout << "Found good seed pair with sideward motion." << std::endl;
+  // The matrices init_r_mat and init_t_vec are already set by recoverPose,
+  // so we don't need to do anything else here
 
   /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -802,115 +800,120 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
             // pt[2] = /*X coordinate of the estimated point */;
             /////////////////////////////////////////////////////////////////////////////////////////
 
-                // Get the 2D image points observed in both cameras
-points0[0] = cv::Point2d(observations_[2*cam_observation_[new_cam_pose_idx][pt_idx]],
-  observations_[2*cam_observation_[new_cam_pose_idx][pt_idx] + 1]);
-points1[0] = cv::Point2d(observations_[2*co_iter.second],
-  observations_[2*co_iter.second + 1]);
+            // Get the 2D image points observed in both cameras
+            points0[0] = cv::Point2d(observations_[2 * cam_observation_[new_cam_pose_idx][pt_idx]],
+                                     observations_[2 * cam_observation_[new_cam_pose_idx][pt_idx] + 1]);
+            points1[0] = cv::Point2d(observations_[2 * co_iter.second],
+                                     observations_[2 * co_iter.second + 1]);
 
-// Build the projection matrices for both cameras
-// First, convert the axis-angle representation to rotation matrices
-cv::Mat_<double> R0(3, 3), R1(3, 3);
-cv::Mat_<double> rvec0 = (cv::Mat_<double>(3, 1) << cam0_data[0], cam0_data[1], cam0_data[2]);
-cv::Mat_<double> rvec1 = (cv::Mat_<double>(3, 1) << cam1_data[0], cam1_data[1], cam1_data[2]);
-cv::Rodrigues(rvec0, R0);
-cv::Rodrigues(rvec1, R1);
+            // Build the projection matrices for both cameras
+            // First, convert the axis-angle representation to rotation matrices
+            cv::Mat_<double> R0(3, 3), R1(3, 3);
+            cv::Mat_<double> rvec0 = (cv::Mat_<double>(3, 1) << cam0_data[0], cam0_data[1], cam0_data[2]);
+            cv::Mat_<double> rvec1 = (cv::Mat_<double>(3, 1) << cam1_data[0], cam1_data[1], cam1_data[2]);
+            cv::Rodrigues(rvec0, R0);
+            cv::Rodrigues(rvec1, R1);
 
-// Create the projection matrices [R|t]
-proj_mat0 = cv::Mat_<double>::zeros(3, 4);
-proj_mat1 = cv::Mat_<double>::zeros(3, 4);
-R0.copyTo(proj_mat0(cv::Rect(0, 0, 3, 3)));
-R1.copyTo(proj_mat1(cv::Rect(0, 0, 3, 3)));
-proj_mat0(0, 3) = cam0_data[3];
-proj_mat0(1, 3) = cam0_data[4];
-proj_mat0(2, 3) = cam0_data[5];
-proj_mat1(0, 3) = cam1_data[3];
-proj_mat1(1, 3) = cam1_data[4];
-proj_mat1(2, 3) = cam1_data[5];
+            // Create the projection matrices [R|t]
+            proj_mat0 = cv::Mat_<double>::zeros(3, 4);
+            proj_mat1 = cv::Mat_<double>::zeros(3, 4);
+            R0.copyTo(proj_mat0(cv::Rect(0, 0, 3, 3)));
+            R1.copyTo(proj_mat1(cv::Rect(0, 0, 3, 3)));
+            proj_mat0(0, 3) = cam0_data[3];
+            proj_mat0(1, 3) = cam0_data[4];
+            proj_mat0(2, 3) = cam0_data[5];
+            proj_mat1(0, 3) = cam1_data[3];
+            proj_mat1(1, 3) = cam1_data[4];
+            proj_mat1(2, 3) = cam1_data[5];
 
-// Triangulate the 3D point using the two cameras
-cv::triangulatePoints(proj_mat0, proj_mat1, points0, points1, hpoints4D);
+            // Triangulate the 3D point using the two cameras
+            cv::triangulatePoints(proj_mat0, proj_mat1, points0, points1, hpoints4D);
 
-// Convert homogeneous coordinates to 3D point
-double X = hpoints4D.at<double>(0, 0) / hpoints4D.at<double>(3, 0);
-double Y = hpoints4D.at<double>(1, 0) / hpoints4D.at<double>(3, 0);
-double Z = hpoints4D.at<double>(2, 0) / hpoints4D.at<double>(3, 0);
+            // Convert homogeneous coordinates to 3D point
+            double X = hpoints4D.at<double>(0, 0) / hpoints4D.at<double>(3, 0);
+            double Y = hpoints4D.at<double>(1, 0) / hpoints4D.at<double>(3, 0);
+            double Z = hpoints4D.at<double>(2, 0) / hpoints4D.at<double>(3, 0);
 
-// Check the cheirality constraint for both cameras
-// A point satisfies the constraint if it's in front of both cameras
-bool cheirality0 = checkCheiralityConstraint(new_cam_pose_idx, pt_idx);
+            // Check the cheirality constraint for both cameras
+            // A point satisfies the constraint if it's in front of both cameras
+            bool cheirality0 = checkCheiralityConstraint(new_cam_pose_idx, pt_idx);
 
+            // Temporarily store the point to check the second constraint
+            double *pt_temp = pointBlockPtr(pt_idx);
+            double backup[3] = {pt_temp[0], pt_temp[1], pt_temp[2]};
+            pt_temp[0] = X;
+            pt_temp[1] = Y;
+            pt_temp[2] = Z;
 
-// Temporarily store the point to check the second constraint
-double* pt_temp = pointBlockPtr(pt_idx);
-double backup[3] = {pt_temp[0], pt_temp[1], pt_temp[2]};
-pt_temp[0] = X;
-pt_temp[1] = Y;
-pt_temp[2] = Z;
+            bool cheirality1 = checkCheiralityConstraint(cam_idx, pt_idx);
 
-bool cheirality1 = checkCheiralityConstraint(cam_idx, pt_idx);
+            // If the point passes the cheirality constraint for both cameras, keep it
+            if (cheirality0 && cheirality1 && Z > 0)
+            {
+              n_new_pts++;
+              pts_optim_iter_[pt_idx] = 1;
+              double *pt = pointBlockPtr(pt_idx);
+              pt[0] = X;
+              pt[1] = Y;
+              pt[2] = Z;
+            }
+            else
+            {
+              // Otherwise, restore the backup (though it will be zeroed out anyway)
+              pt_temp[0] = backup[0];
+              pt_temp[1] = backup[1];
+              pt_temp[2] = backup[2];
+            }
 
-// If the point passes the cheirality constraint for both cameras, keep it
-if (cheirality0 && cheirality1 && Z > 0) {
-n_new_pts++;
-pts_optim_iter_[pt_idx] = 1;
-double *pt = pointBlockPtr(pt_idx);
-pt[0] = X;
-pt[1] = Y;
-pt[2] = Z;
-} else {
-// Otherwise, restore the backup (though it will be zeroed out anyway)
-pt_temp[0] = backup[0];
-pt_temp[1] = backup[1];
-pt_temp[2] = backup[2];
-}
-                
-
-                
-                
             /////////////////////////////////////////////////////////////////////////////////////////
-
           }
         }
       }
     }
 
-    cout<<"ADDED "<<n_new_pts<<" new points"<<endl;
+    cout << "ADDED " << n_new_pts << " new points" << endl;
 
     cout << "Using " << iter + 2 << " over " << num_cam_poses_ << " cameras" << endl;
-    for(int i = 0; i < int(cam_pose_optim_iter_.size()); i++ )
+    for (int i = 0; i < int(cam_pose_optim_iter_.size()); i++)
       cout << int(cam_pose_optim_iter_[i]) << " ";
-    cout<<endl;
+    cout << endl;
 
     // Execute an iteration of bundle adjustment
-    bundleAdjustmentIter(new_cam_pose_idx );
+    bundleAdjustmentIter(new_cam_pose_idx);
 
     Eigen::Vector3d vol_min = Eigen::Vector3d::Constant((std::numeric_limits<double>::max())),
-        vol_max = Eigen::Vector3d::Constant((-std::numeric_limits<double>::max()));
-    for(int i_c = 0; i_c < num_cam_poses_; i_c++ )
+                    vol_max = Eigen::Vector3d::Constant((-std::numeric_limits<double>::max()));
+    for (int i_c = 0; i_c < num_cam_poses_; i_c++)
     {
-      if( cam_pose_optim_iter_[i_c] )
+      if (cam_pose_optim_iter_[i_c])
       {
-        double *camera = cameraBlockPtr (i_c);
-        if(camera[3] > vol_max(0)) vol_max(0) = camera[3];
-        if(camera[4] > vol_max(1)) vol_max(1) = camera[4];
-        if(camera[5] > vol_max(2)) vol_max(2) = camera[5];
-        if(camera[3] < vol_min(0)) vol_min(0) = camera[3];
-        if(camera[4] < vol_min(1)) vol_min(1) = camera[4];
-        if(camera[5] < vol_min(2)) vol_min(2) = camera[5];
+        double *camera = cameraBlockPtr(i_c);
+        if (camera[3] > vol_max(0))
+          vol_max(0) = camera[3];
+        if (camera[4] > vol_max(1))
+          vol_max(1) = camera[4];
+        if (camera[5] > vol_max(2))
+          vol_max(2) = camera[5];
+        if (camera[3] < vol_min(0))
+          vol_min(0) = camera[3];
+        if (camera[4] < vol_min(1))
+          vol_min(1) = camera[4];
+        if (camera[5] < vol_min(2))
+          vol_min(2) = camera[5];
       }
     }
 
-    double max_dist = 5*(vol_max - vol_min).norm();
-    if(max_dist < 10.0) max_dist = 10.0;
+    double max_dist = 5 * (vol_max - vol_min).norm();
+    if (max_dist < 10.0)
+      max_dist = 10.0;
 
     double *pts = parameters_.data() + num_cam_poses_ * camera_block_size_;
-    for( int i = 0; i < num_points_; i++ )
+    for (int i = 0; i < num_points_; i++)
     {
-      if( pts_optim_iter_[i] > 0 &&
-          ( fabs(pts[i*point_block_size_]) > max_dist ||
-              fabs(pts[i*point_block_size_ + 1]) > max_dist ||
-              fabs(pts[i*point_block_size_ + 2]) > max_dist ) )
+      if (pts_optim_iter_[i] > 0 &&
+          (fabs(pts[i * point_block_size_]) > max_dist ||
+           fabs(pts[i * point_block_size_ + 1]) > max_dist ||
+           fabs(pts[i * point_block_size_ + 2]) > max_dist))
       {
         pts_optim_iter_[i] = -1;
       }
@@ -925,55 +928,66 @@ pt_temp[2] = backup[2];
     // the previous camera and point positions were updated during this iteration.
     /////////////////////////////////////////////////////////////////////////////////////////
 
-   // Check for various divergence indicators:
+    // Check for various divergence indicators:
 
-// 1. Check if the reconstruction volume has grown too large 
-// (indicates points scattering too far apart)
-double volume_size = (vol_max - vol_min).norm();
-double volume_threshold = 500.0; // Adjust based on your expected scene scale
-if (volume_size > volume_threshold) {
-    std::cout << "Reconstruction appears to be diverging: volume size " 
-              << volume_size << " exceeds threshold " << volume_threshold 
-              << ". Restarting with a new seed pair." << std::endl;
-    return false;
-}
+    // 1. Check if the reconstruction volume has grown too large
+    // (indicates points scattering too far apart)
+    double volume_size = (vol_max - vol_min).norm();
+    double volume_threshold = 500.0; // Adjust based on your expected scene scale
+    if (volume_size > volume_threshold)
+    {
+      std::cout << "Reconstruction appears to be diverging: volume size "
+                << volume_size << " exceeds threshold " << volume_threshold
+                << ". Restarting with a new seed pair." << std::endl;
+      return false;
+    }
 
-// 2. Check the number of outlier points (points that were rejected)
-int num_rejected_points = 0;
-for (int i = 0; i < num_points_; i++) {
-    if (pts_optim_iter_[i] < 0) {
+    // 2. Check the number of outlier points (points that were rejected)
+    int num_rejected_points = 0;
+    for (int i = 0; i < num_points_; i++)
+    {
+      if (pts_optim_iter_[i] < 0)
+      {
         num_rejected_points++;
+      }
     }
-}
-double outlier_ratio = static_cast<double>(num_rejected_points) / 
-                      static_cast<double>(std::count_if(pts_optim_iter_.begin(), pts_optim_iter_.end(),
-                                                       [](int val) { return val != 0; }));
-if (outlier_ratio > 0.5) { // If more than 50% of points are outliers
-    std::cout << "Reconstruction appears to be diverging: high outlier ratio " 
-              << outlier_ratio << ". Restarting with a new seed pair." << std::endl;
-    return false;
-}
+    double outlier_ratio = static_cast<double>(num_rejected_points) /
+                           static_cast<double>(std::count_if(pts_optim_iter_.begin(), pts_optim_iter_.end(),
+                                                             [](int val)
+                                                             { return val != 0; }));
+    if (outlier_ratio > 0.5)
+    { // If more than 50% of points are outliers
+      std::cout << "Reconstruction appears to be diverging: high outlier ratio "
+                << outlier_ratio << ". Restarting with a new seed pair." << std::endl;
+      return false;
+    }
 
-// 3. Check for numerical instability by looking for abnormal camera positions
-for (int i_c = 0; i_c < num_cam_poses_; i_c++) {
-    if (cam_pose_optim_iter_[i_c] > 0) {
-        double* camera = cameraBlockPtr(i_c);
+    // 3. Check for numerical instability by looking for abnormal camera positions
+    for (int i_c = 0; i_c < num_cam_poses_; i_c++)
+    {
+      if (cam_pose_optim_iter_[i_c] > 0)
+      {
+        double *camera = cameraBlockPtr(i_c);
         // Check for NaN or extremely large values
-        for (int j = 0; j < camera_block_size_; j++) {
-            if (std::isnan(camera[j]) || std::isinf(camera[j]) || std::abs(camera[j]) > 1e3) {
-                std::cout << "Reconstruction appears to be diverging: numerical instability detected "
-                          << "in camera " << i_c << ". Restarting with a new seed pair." << std::endl;
-                return false;
-            }
+        for (int j = 0; j < camera_block_size_; j++)
+        {
+          if (std::isnan(camera[j]) || std::isinf(camera[j]) || std::abs(camera[j]) > 1e3)
+          {
+            std::cout << "Reconstruction appears to be diverging: numerical instability detected "
+                      << "in camera " << i_c << ". Restarting with a new seed pair." << std::endl;
+            return false;
+          }
         }
+      }
     }
-}
 
-// 4. Check average reprojection error across all observations
-double total_reproj_error = 0.0;
-int num_valid_observations = 0;
-for (int i_obs = 0; i_obs < num_observations_; i_obs++) {
-    if (cam_pose_optim_iter_[cam_pose_index_[i_obs]] > 0 && pts_optim_iter_[point_index_[i_obs]] > 0) {
+    // 4. Check average reprojection error across all observations
+    double total_reproj_error = 0.0;
+    int num_valid_observations = 0;
+    for (int i_obs = 0; i_obs < num_observations_; i_obs++)
+    {
+      if (cam_pose_optim_iter_[cam_pose_index_[i_obs]] > 0 && pts_optim_iter_[point_index_[i_obs]] > 0)
+      {
         double *camera = cameraBlockPtr(cam_pose_index_[i_obs]),
                *point = pointBlockPtr(point_index_[i_obs]),
                *observation = observations_.data() + (i_obs * 2);
@@ -984,51 +998,53 @@ for (int i_obs = 0; i_obs < num_observations_; i_obs++) {
         p[1] += camera[4];
         p[2] += camera[5];
 
-        if (p[2] > 0) { // Point is in front of the camera
-            double predicted_x = p[0] / p[2];
-            double predicted_y = p[1] / p[2];
-            double error = std::sqrt(std::pow(predicted_x - observation[0], 2) + 
-                                     std::pow(predicted_y - observation[1], 2));
-            total_reproj_error += error;
-            num_valid_observations++;
+        if (p[2] > 0)
+        { // Point is in front of the camera
+          double predicted_x = p[0] / p[2];
+          double predicted_y = p[1] / p[2];
+          double error = std::sqrt(std::pow(predicted_x - observation[0], 2) +
+                                   std::pow(predicted_y - observation[1], 2));
+          total_reproj_error += error;
+          num_valid_observations++;
         }
+      }
     }
-}
 
-if (num_valid_observations > 0) {
-    double avg_reproj_error = total_reproj_error / num_valid_observations;
-    if (avg_reproj_error > 3.0 * max_reproj_err_) { // If average error is much worse than threshold
-        std::cout << "Reconstruction appears to be diverging: high average reprojection error " 
+    if (num_valid_observations > 0)
+    {
+      double avg_reproj_error = total_reproj_error / num_valid_observations;
+      if (avg_reproj_error > 3.0 * max_reproj_err_)
+      { // If average error is much worse than threshold
+        std::cout << "Reconstruction appears to be diverging: high average reprojection error "
                   << avg_reproj_error << ". Restarting with a new seed pair." << std::endl;
         return false;
+      }
     }
-}
 
     /////////////////////////////////////////////////////////////////////////////////////////
   }
 
   return true;
-
 }
 
-void BasicSfM::initCamParams(int new_pose_idx, cv::Mat r_vec, cv::Mat t_vec )
+void BasicSfM::initCamParams(int new_pose_idx, cv::Mat r_vec, cv::Mat t_vec)
 {
   double *camera = cameraBlockPtr(new_pose_idx);
 
   cv::Mat_<double> r_vec_d(r_vec), t_vec_d(t_vec);
-  for( int r = 0; r < 3; r++ )
+  for (int r = 0; r < 3; r++)
   {
-    camera[r] = r_vec_d(r,0);
-    camera[r+3] = t_vec_d(r,0);
+    camera[r] = r_vec_d(r, 0);
+    camera[r + 3] = t_vec_d(r, 0);
   }
 }
 
-void BasicSfM::bundleAdjustmentIter( int new_cam_idx )
+void BasicSfM::bundleAdjustmentIter(int new_cam_idx)
 {
   ceres::Solver::Options options;
   options.linear_solver_type = ceres::DENSE_SCHUR;
   options.minimizer_progress_to_stdout = false;
-  options.num_threads = 4;
+  options.num_threads = 1; //TODO repalace to original 4
   options.max_num_iterations = 200;
 
   std::vector<double> bck_parameters;
@@ -1036,7 +1052,7 @@ void BasicSfM::bundleAdjustmentIter( int new_cam_idx )
   bool keep_optimize = true;
 
   // Global optimization
-  while( keep_optimize )
+  while (keep_optimize)
   {
     bck_parameters = parameters_;
     ceres::Problem problem;
@@ -1060,30 +1076,31 @@ void BasicSfM::bundleAdjustmentIter( int new_cam_idx )
         //////////////////////////////////////////////////////////////////////////////////
 
         // Get the observation values (2D point in image)
-double *observation = observations_.data() + (i_obs * 2);
-double observed_x = observation[0];
-double observed_y = observation[1];
+        double *observation = observations_.data() + (i_obs * 2);
+        double observed_x = observation[0];
+        double observed_y = observation[1];
 
-// Get pointers to the camera and point parameter blocks
-double *camera = cameraBlockPtr(cam_pose_index_[i_obs]);
-double *point = pointBlockPtr(point_index_[i_obs]);
+        // Get pointers to the camera and point parameter blocks
+        double *camera = cameraBlockPtr(cam_pose_index_[i_obs]);
+        double *point = pointBlockPtr(point_index_[i_obs]);
 
-// Create a cost function based on the ReprojectionError struct
-ceres::CostFunction* cost_function = ReprojectionError::Create(observed_x, observed_y);
+        // Create a cost function based on the ReprojectionError struct
+        ceres::CostFunction *cost_function = ReprojectionError::Create(observed_x, observed_y);
 
-// Add the residual block to the problem
-// Use a Cauchy loss function to make the optimization robust to outliers
-problem.AddResidualBlock(
-    cost_function,                 // Cost function (calculates the error)
-    new ceres::CauchyLoss(2 * max_reproj_err_), // Loss function to handle outliers
-    camera,                        // First parameter block (camera pose)
-    point                          // Second parameter block (3D point)
-);
+        // Add the residual block to the problem
+        // Use a Cauchy loss function to make the optimization robust to outliers
+        problem.AddResidualBlock(
+            cost_function,                              // Cost function (calculates the error)
+            new ceres::CauchyLoss( max_reproj_err_), //*2 prima Loss function to handle outliers
+            camera,                                     // First parameter block (camera pose)
+            point                                       // Second parameter block (3D point)
+        );
 
-// The first camera pose is fixed to avoid gauge freedom
-if (cam_pose_index_[i_obs] == 0) {
-    problem.SetParameterBlockConstant(camera);
-}
+        // The first camera pose is fixed to avoid gauge freedom
+        if (cam_pose_index_[i_obs] == 0)
+        {
+          problem.SetParameterBlockConstant(camera);
+        }
 
         
         
