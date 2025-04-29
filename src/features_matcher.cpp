@@ -38,6 +38,7 @@ void FeatureMatcher::extractFeatures()
     // it into feats_colors_[i] vector
     /////////////////////////////////////////////////////////////////////////////////////////
     cv::Ptr<cv::ORB> orb = cv::ORB::create();
+    orb->setMaxFeatures(30000);
     
     // Detect keypoints
     orb->detect(img, features_[i]);
@@ -45,6 +46,18 @@ void FeatureMatcher::extractFeatures()
     // Compute descriptors
     orb->compute(img, features_[i], descriptors_[i]);
     feats_colors_[i].resize(features_[i].size());
+
+    // Same using SIFT
+    //cv::Ptr<cv::SIFT> sift = cv::SIFT::create();
+    //sift->detect(img, features_[i]);
+    //sift->compute(img, features_[i], descriptors_[i]);
+    //feats_colors_[i].resize(features_[i].size());
+    
+    // Same using SURF
+    //cv::Ptr<cv::SURF> surf = cv::SURF::create();
+    //surf->detect(img, features_[i]);
+    //surf->compute(img, features_[i], descriptors_[i]);
+    //feats_colors_[i].resize(features_[i].size());
 
     for(int j = 0; j < features_[i].size(); j++) {
       // Get the color of the feature
@@ -80,11 +93,39 @@ void FeatureMatcher::exhaustiveMatching()
       // In case of success, set the matches with the function:
       // setMatches( i, j, inlier_matches);
       /////////////////////////////////////////////////////////////////////////////////////////
-      
-      
-      
-      
-      
+      // Use the BFMatcher to match descriptor
+      // For ORB use the Hamming distance
+      cv::BFMatcher matcher(cv::NORM_HAMMING);
+      // For SIFT/SURF use the L2 distance
+      //cv::BFMatcher matcher(cv::NORM_L2);
+      matcher.match(descriptors_[i], descriptors_[j], matches);
+
+      // Prepare the points for the essential matrix
+      std::vector<cv::Point2f> pts0, pts1;
+      for (const auto &match : matches) {
+        pts0.push_back(features_[i][match.queryIdx].pt);
+        pts1.push_back(features_[j][match.trainIdx].pt);
+      }
+
+      // Estimate the essential matrix
+      cv::Mat E = cv::findEssentialMat(pts0, pts1, new_intrinsics_matrix_, cv::RANSAC, 0.999, 1.0);
+
+      // Estimate the homography matrix
+      cv::Mat H = cv::findHomography(pts0, pts1, cv::RANSAC, 1.0);
+
+      // Get the inliers
+      inlier_matches.clear();
+      for (int k = 0; k < matches.size(); k++) {
+        bool in_E = (E.at<uchar>(k, 0) != 0);
+        bool in_H = (!H.empty() && H.at<uchar>(k, 0) != 0);
+        if ((in_E && !in_H)) inlier_matches.push_back(matches[k]);
+      }
+
+      if (inlier_matches.size() > 5) {
+        std::cout << "Found " << inlier_matches.size() << " inliers" << std::endl;
+        // Set the matches
+        setMatches(i, j, inlier_matches);
+      } else sstd::cerr << "Not enough inliers matches" << std::endl;
 
       /////////////////////////////////////////////////////////////////////////////////////////
 
