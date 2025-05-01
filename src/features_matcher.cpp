@@ -107,26 +107,36 @@ void FeatureMatcher::exhaustiveMatching()
         pts1.push_back(features_[j][match.trainIdx].pt);
       }
 
-      // Estimate the essential matrix
-      cv::Mat E = cv::findEssentialMat(pts0, pts1, new_intrinsics_matrix_, cv::RANSAC, 0.999, 1.0);
+      // Estimate the essential matrix with mask output
+      std::vector<uchar> mask_E;
+      cv::Mat E = cv::findEssentialMat(pts0, pts1, new_intrinsics_matrix_, cv::RANSAC, 0.999, 1.0, mask_E);
 
-      // Estimate the homography matrix
-      cv::Mat H = cv::findHomography(pts0, pts1, cv::RANSAC, 1.0);
-
-      // Get the inliers
+      // Estimate the homography matrix with mask output
+      std::vector<uchar> mask_H;
+      cv::Mat H = cv::findHomography(pts0, pts1, cv::RANSAC, 1.0, mask_H);
+      
+      // Count inliers for both models
+      int num_inliers_E = cv::countNonZero(mask_E);
+      int num_inliers_H = (!H.empty()) ? cv::countNonZero(mask_H) : 0;
+      
+      // Choose the mask with more inliers
+      std::vector<uchar>& best_mask = (num_inliers_E > num_inliers_H) ? mask_E : mask_H;
+      
+      // Get inlier matches based on the best mask
       inlier_matches.clear();
-      for (int k = 0; k < matches.size(); k++) {
-        bool in_E = (E.at<uchar>(k, 0) != 0);
-        bool in_H = (!H.empty() && H.at<uchar>(k, 0) != 0);
-        if ((in_E && !in_H)) inlier_matches.push_back(matches[k]);
+      for (size_t k = 0; k < best_mask.size(); k++) {
+        if (best_mask[k]) {
+          inlier_matches.push_back(matches[k]);
+        }
       }
-
+      
       if (inlier_matches.size() > 5) {
         std::cout << "Found " << inlier_matches.size() << " inliers" << std::endl;
         // Set the matches
         setMatches(i, j, inlier_matches);
-      } else std::cerr << "Not enough inliers matches" << std::endl;
-
+      } else {
+        std::cerr << "Not enough inliers matches" << std::endl;
+      }
       /////////////////////////////////////////////////////////////////////////////////////////
 
     }
