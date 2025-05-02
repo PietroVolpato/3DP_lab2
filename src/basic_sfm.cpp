@@ -878,6 +878,8 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
     for (int i = 0; i < int(cam_pose_optim_iter_.size()); i++)
       cout << int(cam_pose_optim_iter_[i]) << " ";
     cout << endl;
+    //added this line
+    std::vector<double> bck_parameters = parameters_;
 
     // Execute an iteration of bundle adjustment
     bundleAdjustmentIter(new_cam_pose_idx);
@@ -929,14 +931,12 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
     // the previous camera and point positions were updated during this iteration.
     /////////////////////////////////////////////////////////////////////////////////////////
 
-    // Check for various divergence indicators:
 
-    // TODO: in realtà nei due dataset vengono chiamate solo una volta, vedere se si possono ridurre/ fine tunare meglio
-    // Backup the current parameters before the iteration
+  
+   const double POINT_CHANGE_THRESHOLD = 1000.0; // unità di misura?
+   const double CAMERA_CHANGE_THRESHOLD = 2000.0; // 
+
    // Check camera parameter changes
-   std::vector<double> bck_parameters = parameters_; 
-   const double POINT_CHANGE_THRESHOLD = 0.5; // in world units (e.g., meters)
-   const double CAMERA_CHANGE_THRESHOLD = 1.0; // in Euclidean distance of parameter vector
     for (int i_c = 0; i_c < num_cam_poses_; i_c++)
     {
       if (cam_pose_optim_iter_[i_c] > 0)
@@ -950,7 +950,7 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
         }
         change = std::sqrt(change);
         if (change > CAMERA_CHANGE_THRESHOLD){
-          std::cout << "++++++++++++++++Reconstruction appears to be diverging. Restarting with a new seed pair." << std::endl;
+          std::cout << "++++++++++++++++Reconstruction appears to be diverging (camera). Restarting with a new seed pair." << std::endl;
           return false;
         }
       }
@@ -972,7 +972,7 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
         }
         change = std::sqrt(change);
         if (change > POINT_CHANGE_THRESHOLD){
-          std::cout << "++++++++++++++++Reconstruction appears to be diverging. Restarting with a new seed pair." << std::endl;
+          std::cout << "++++++++++++++++Reconstruction appears to be diverging (point). Restarting with a new seed pair." << std::endl;
           return false;
         }
       }
