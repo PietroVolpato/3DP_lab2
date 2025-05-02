@@ -931,12 +931,14 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
     // the previous camera and point positions were updated during this iteration.
     /////////////////////////////////////////////////////////////////////////////////////////
 
+    double scene_scale = (vol_max - vol_min).norm();
+    const double POINT_CHANGE_THRESHOLD = 0.3 * scene_scale;  // avg threshold for points
+    const double CAMERA_CHANGE_THRESHOLD = 0.5 * scene_scale; // avg threshold for cameras
 
-  
-   const double POINT_CHANGE_THRESHOLD = 1000.0; // unità di misura?
-   const double CAMERA_CHANGE_THRESHOLD = 2000.0; // 
+    double total_cam_change = 0.0;
+    int cam_count = 0;
 
-   // Check camera parameter changes
+    // Camera change average
     for (int i_c = 0; i_c < num_cam_poses_; i_c++)
     {
       if (cam_pose_optim_iter_[i_c] > 0)
@@ -948,17 +950,27 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
           double prev = bck_parameters[i_c * camera_block_size_ + j];
           change += (curr - prev) * (curr - prev);
         }
-        change = std::sqrt(change);
-        if (change > CAMERA_CHANGE_THRESHOLD){
-          std::cout << "++++++++++++++++Reconstruction appears to be diverging (camera). Restarting with a new seed pair." << std::endl;
-          return false;
-        }
+        total_cam_change += std::sqrt(change);
+        cam_count++;
       }
     }
 
-    const double *points = pointBlockPtr();   
+    if (cam_count > 0)
+    {
+      double avg_cam_change = total_cam_change / cam_count;
+      if (avg_cam_change > CAMERA_CHANGE_THRESHOLD)
+      {
+        std::cout << "+++++ Reconstruction diverging (avg camera change). Restarting with new seed." << std::endl;
+        return false;
+      }
+    }
+
+    // Point change average
+    const double *points = pointBlockPtr();
     const double *bck_points = bck_parameters.data() + num_cam_poses_ * camera_block_size_;
-    // Check point parameter changes
+    double total_point_change = 0.0;
+    int point_count = 0;
+
     for (int i_pt = 0; i_pt < num_points_; i_pt++)
     {
       if (pts_optim_iter_[i_pt] > 0)
@@ -970,11 +982,18 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
           double prev = bck_points[i_pt * point_block_size_ + j];
           change += (curr - prev) * (curr - prev);
         }
-        change = std::sqrt(change);
-        if (change > POINT_CHANGE_THRESHOLD){
-          std::cout << "++++++++++++++++Reconstruction appears to be diverging (point). Restarting with a new seed pair." << std::endl;
-          return false;
-        }
+        total_point_change += std::sqrt(change);
+        point_count++;
+      }
+    }
+
+    if (point_count > 0)
+    {
+      double avg_point_change = total_point_change / point_count;
+      if (avg_point_change > POINT_CHANGE_THRESHOLD)
+      {
+        std::cout << "+++++ Reconstruction diverging (avg point change). Restarting with new seed." << std::endl;
+        return false;
       }
     }
 
