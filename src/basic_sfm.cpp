@@ -43,8 +43,7 @@ struct ReprojectionError
     p[1] += camera[4];
     p[2] += camera[5];
 
-    // Check for division by zero or negative z
-    // This is critical to avoid NaN values
+    // Check for division by zero or negative z to avoid NaN values TODO is this really required?
     if (p[2] <= T(1e-6))
     {
       // Point is behind the camera, return a large error
@@ -53,7 +52,9 @@ struct ReprojectionError
       return true;
     }
 
-    // Compute the projection
+    // no need to deal with distorsion 
+
+    // Compute the projection ( no - sign, different from tutorial)
     T predicted_x = p[0] / p[2];
     T predicted_y = p[1] / p[2];
 
@@ -579,7 +580,7 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
 
   std::cout << "Inliers E: " << num_inliers_E << ", Inliers H: " << num_inliers_H << std::endl;
 
-  // Check if we have more inliers for E than for H (which indicates a general 3D scene rather than a planar one)
+  // Check if we have more inliers for E than for H 
   if (num_inliers_E <= num_inliers_H)
   {
     std::cout << "The scene appears to be planar (H has more inliers than E). Trying a new seed pair." << std::endl;
@@ -590,7 +591,7 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
   int num_good_pts = cv::recoverPose(E, points0, points1, intrinsics_matrix, init_r_mat, init_t_vec, inlier_mask_E);
 
   // Check if we have enough inliers after pose recovery
-  if (num_good_pts < 10)
+  if (num_good_pts < 10) //at least 5
   {
     std::cout << "Not enough points survived pose recovery. Trying a new seed pair." << std::endl;
     return false;
@@ -607,13 +608,13 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
   // If forward motion dominates (z-component is larger than lateral components)
   if (tz > lateral_motion)
   {
-    std::cout << "Motion appears to be mainly forward. Sideward motion is preferred. Trying a new seed pair." << std::endl;
+    std::cout << "Motion appears to be mainly forward. Trying a new seed pair." << std::endl;
     return false;
   }
 
   std::cout << "Found good seed pair with sideward motion." << std::endl;
   // The matrices init_r_mat and init_t_vec are already set by recoverPose,
-  // so we don't need to do anything else here
+  // so we don't need to do anything else here (if results are bad, they will anyway not be used)
 
   /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -930,20 +931,92 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
 
     // Check for various divergence indicators:
 
-    // 1. Check if the reconstruction volume has grown too large
-    // (indicates points scattering too far apart)
-    double volume_size = (vol_max - vol_min).norm();
-    double volume_threshold = 500.0; // Adjust based on your expected scene scale
-    if (volume_size > volume_threshold)
+    // TODO: in realtà nei due dataset vengono chiamate solo una volta, vedere se si possono ridurre/ fine tunare meglio
+    // Backup the current parameters before the iteration
+    std::vector<double> bck_parameters = parameters_;
+
+    double total_param_change = 0.0;
+    int num_params_compared = 0;
+
+    // === 1. Check camera parameter changes ===
+    for (int i_c = 0; i_c < num_cam_poses_; i_c++)
     {
-      std::cout << "Reconstruction appears to be diverging: volume size "
-                << volume_size << " exceeds threshold " << volume_threshold
-                << ". Restarting with a new seed pair." << std::endl;
+      if (cam_pose_optim_iter_[i_c] > 0)
+      {
+        double change = 0.0;
+        for (int j = 0; j < camera_block_size_; j++)
+        {
+          double curr = parameters_[i_c * camera_block_size_ + j];
+          double prev = bck_parameters[i_c * camera_block_size_ + j];
+          change += (curr - prev) * (curr - prev);
+        }
+        change = std::sqrt(change);
+
+        if (change > 5.0)
+        { // excessive camera change
+          std::cout << "------------ Divergence: camera " << i_c << " changed by " << change << std::endl;
+          return false;
+        }
+
+        total_param_change += change;
+        num_params_compared++;
+      }
+    }
+
+    // === 2. Check point parameter changes ===
+    const double *points = pointBlockPtr();
+    const double *bck_points = bck_parameters.data() + num_cam_poses_ * camera_block_size_;
+
+    for (int i_pt = 0; i_pt < num_points_; i_pt++)
+    {
+      if (pts_optim_iter_[i_pt] > 0)
+      {
+        double change = 0.0;
+        for (int j = 0; j < point_block_size_; j++)
+        {
+          double curr = points[i_pt * point_block_size_ + j];
+          double prev = bck_points[i_pt * point_block_size_ + j];
+          change += (curr - prev) * (curr - prev);
+        }
+        change = std::sqrt(change);
+
+        if (change > 5.0)
+        {
+          std::cout << "------------ Divergence: point " << i_pt << " moved by " << change << std::endl;
+          return false;
+        }
+
+        total_param_change += change;
+        num_params_compared++;
+      }
+    }
+
+    // === 3. Check average parameter change ===
+    if (num_params_compared > 10)
+    {
+      double avg_change = total_param_change / num_params_compared;
+      if (avg_change > 2.0)
+      {
+        std::cout << "------------ Divergence: average parameter change " << avg_change << std::endl;
+        return false;
+      }
+    }
+
+    // === 4. Check reconstruction volume size ===
+    double volume_size = (vol_max - vol_min).norm();
+    if (volume_size > 500.0)
+    {
+      std::cout << "------------ Divergence: reconstruction volume too large (" << volume_size << ")" << std::endl;
       return false;
     }
 
-    // 2. Check the number of outlier points (points that were rejected)
+    // === 5. Check outlier ratio ===
     int num_rejected_points = 0;
+    int num_optimized_points = std::count_if(
+        pts_optim_iter_.begin(), pts_optim_iter_.end(),
+        [](int val)
+        { return val != 0; });
+
     for (int i = 0; i < num_points_; i++)
     {
       if (pts_optim_iter_[i] < 0)
@@ -951,46 +1024,48 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
         num_rejected_points++;
       }
     }
-    double outlier_ratio = static_cast<double>(num_rejected_points) /
-                           static_cast<double>(std::count_if(pts_optim_iter_.begin(), pts_optim_iter_.end(),
-                                                             [](int val)
-                                                             { return val != 0; }));
-    if (outlier_ratio > 0.5)
-    { // If more than 50% of points are outliers
-      std::cout << "Reconstruction appears to be diverging: high outlier ratio "
-                << outlier_ratio << ". Restarting with a new seed pair." << std::endl;
-      return false;
+
+    if (num_optimized_points > 0)
+    {
+      double outlier_ratio = static_cast<double>(num_rejected_points) / num_optimized_points;
+      if (outlier_ratio > 0.5)
+      {
+        std::cout << "------------ Divergence: high outlier ratio " << outlier_ratio << std::endl;
+        return false;
+      }
     }
 
-    // 3. Check for numerical instability by looking for abnormal camera positions
+    // === 6. Check for NaNs or numerical instability in camera parameters ===
     for (int i_c = 0; i_c < num_cam_poses_; i_c++)
     {
       if (cam_pose_optim_iter_[i_c] > 0)
       {
         double *camera = cameraBlockPtr(i_c);
-        // Check for NaN or extremely large values
         for (int j = 0; j < camera_block_size_; j++)
         {
           if (std::isnan(camera[j]) || std::isinf(camera[j]) || std::abs(camera[j]) > 1e3)
           {
-            std::cout << "Reconstruction appears to be diverging: numerical instability detected "
-                      << "in camera " << i_c << ". Restarting with a new seed pair." << std::endl;
+            std::cout << "------------ Divergence: invalid camera parameter at " << i_c << std::endl;
             return false;
           }
         }
       }
     }
 
-    // 4. Check average reprojection error across all observations
+    // === 7. Check average reprojection error ===
     double total_reproj_error = 0.0;
     int num_valid_observations = 0;
+
     for (int i_obs = 0; i_obs < num_observations_; i_obs++)
     {
-      if (cam_pose_optim_iter_[cam_pose_index_[i_obs]] > 0 && pts_optim_iter_[point_index_[i_obs]] > 0)
+      int cam_idx = cam_pose_index_[i_obs];
+      int pt_idx = point_index_[i_obs];
+
+      if (cam_pose_optim_iter_[cam_idx] > 0 && pts_optim_iter_[pt_idx] > 0)
       {
-        double *camera = cameraBlockPtr(cam_pose_index_[i_obs]),
-               *point = pointBlockPtr(point_index_[i_obs]),
-               *observation = observations_.data() + (i_obs * 2);
+        double *camera = cameraBlockPtr(cam_idx);
+        double *point = pointBlockPtr(pt_idx);
+        double *observation = observations_.data() + (i_obs * 2);
 
         double p[3];
         ceres::AngleAxisRotatePoint(camera, point, p);
@@ -1014,9 +1089,8 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
     {
       double avg_reproj_error = total_reproj_error / num_valid_observations;
       if (avg_reproj_error > 3.0 * max_reproj_err_)
-      { // If average error is much worse than threshold
-        std::cout << "Reconstruction appears to be diverging: high average reprojection error "
-                  << avg_reproj_error << ". Restarting with a new seed pair." << std::endl;
+      {
+        std::cout << "------------ Divergence: avg reprojection error " << avg_reproj_error << std::endl;
         return false;
       }
     }
