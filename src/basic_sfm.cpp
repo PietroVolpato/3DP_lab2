@@ -708,37 +708,82 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
     // Basic next best view selection strategy.
     // Select the new camera (new_cam_pose_idx) to be included in the optimization as the one that has
     // more projected points in common with the cameras already included in the optimization
-    for( int i_p = 0; i_p < num_points_; i_p++ )
-    {
-      if( pts_optim_iter_[i_p] > 0 ) // Point already added
-      {
-        for(int i_c = 0; i_c < num_cam_poses_; i_c++ )
-        {
-          if( cam_pose_optim_iter_[i_c] == 0 && // New camera pose not yet registered
-              cam_observation_[i_c].find( i_p ) != cam_observation_[i_c].end() ) // Dees camera i_c see this 3D point?
-            n_init_pts[i_c]++;
-        }
-      }
-    }
+    // for( int i_p = 0; i_p < num_points_; i_p++ )
+    // {
+    //   if( pts_optim_iter_[i_p] > 0 ) // Point already added
+    //   {
+    //     for(int i_c = 0; i_c < num_cam_poses_; i_c++ )
+    //     {
+    //       if( cam_pose_optim_iter_[i_c] == 0 && // New camera pose not yet registered
+    //           cam_observation_[i_c].find( i_p ) != cam_observation_[i_c].end() ) // Dees camera i_c see this 3D point?
+    //         n_init_pts[i_c]++;
+    //     }
+    //   }
+    // }
 
-    for(int i_c = 0; i_c < num_cam_poses_; i_c++ )
-    {
-      if( cam_pose_optim_iter_[i_c] == 0 && n_init_pts[i_c] > max_init_pts )
-      {
-        max_init_pts = n_init_pts[i_c];
-        new_cam_pose_idx = i_c;
-      }
-    }
+    // for(int i_c = 0; i_c < num_cam_poses_; i_c++ )
+    // {
+    //   if( cam_pose_optim_iter_[i_c] == 0 && n_init_pts[i_c] > max_init_pts )
+    //   {
+    //     max_init_pts = n_init_pts[i_c];
+    //     new_cam_pose_idx = i_c;
+    //   }
+    // }
 
     //////////////////////////// Code to be completed (OPTIONAL) ////////////////////////////////
     // Implement an alternative next best view selection strategy, e.g., the one presented
     // in class(see Structure From Motion Revisited paper, sec. 4.2). Just comment the basic next
     // best view selection strategy implemented above and replace it with yours.
     /////////////////////////////////////////////////////////////////////////////////////////
+    const int K_t = 3;
+    // Score for each candidate camera
+    std::vector<double> scores(num_cam_poses_, -1.0);
+    for(int i_c = 0; i_c < num_cam_poses_; i_c++) {
+      // Skip already registered or rejected cameras
+      if(cam_pose_optim_iter_[i_c] != 0) continue;
+      // Collect indices of registered 3D points seen by camera i_c
+      std::vector<int> pts;
+      for(const auto& obs : cam_observation_[i_c]) {
+        int pt_idx = obs.first;
+        if(pts_optim_iter_[pt_idx] > 0)
+          pts.push_back(pt_idx);
+      }
+      if(pts.empty()) continue;
+
+      double score = 0.0;
+      // Multi-resolution occupancy grids
+      for(int l = 0; l < K_t; l++) {
+        int K = 1 << l;
+        // Occupancy map for this level
+        std::vector<std::vector<bool>> occupied(K, std::vector<bool>(K, false));
+        double weight = static_cast<double>(K) * static_cast<double>(K);
+        for(int pt_idx : pts) {
+          int obs_idx = cam_observation_[i_c][pt_idx];
+          // Normalized image coordinates
+          double x = observations_[2*obs_idx];
+          double y = observations_[2*obs_idx + 1];
+          // Map from [-1,1] to [0,1]
+          double u = (x + 1.0) * 0.5;
+          double v = (y + 1.0) * 0.5;
+          int ix = std::min(std::max(static_cast<int>(u * K), 0), K - 1);
+          int iy = std::min(std::max(static_cast<int>(v * K), 0), K - 1);
+          if(!occupied[ix][iy]) {
+            occupied[ix][iy] = true;
+            score += weight;
+          }
+        }
+      }
+      scores[i_c] = score;
+    }
+
+    // Select the camera with the highest multi-resolution score
+    new_cam_pose_idx = static_cast<int>(std::max_element(scores.begin(), scores.end()) - scores.begin());
+
+    /////////////////////////////////////////////////////////////////////////////////////////
 
 
-    // Now new_cam_pose_idx is the index of the next camera pose to be registered
-    // Extract the 3D points that are projected in the new_cam_pose_idx-th pose and that are already registered
+    // // Now new_cam_pose_idx is the index of the next camera pose to be registered
+    // // Extract the 3D points that are projected in the new_cam_pose_idx-th pose and that are already registered
     std::vector<cv::Point3d> scene_pts;
     std::vector<cv::Point2d> img_pts;
     for( int i_p = 0; i_p < num_points_; i_p++ )
@@ -931,7 +976,7 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
     // the previous camera and point positions were updated during this iteration.
     /////////////////////////////////////////////////////////////////////////////////////////
 
-    double scene_scale = (vol_max - vol_min).norm();
+   /* double scene_scale = (vol_max - vol_min).norm();
     const double POINT_CHANGE_THRESHOLD = 0.3 * scene_scale;  // avg threshold for points
     const double CAMERA_CHANGE_THRESHOLD = 0.5 * scene_scale; // avg threshold for cameras
 
@@ -995,6 +1040,72 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
         std::cout << "+++++ Reconstruction diverging (avg point change). Restarting with new seed." << std::endl;
         return false;
       }
+    }*/
+
+    // Check the average distance of points
+    double avg_point_distance = 0.0;
+    int valid_points = 0;
+    const double* points = pointBlockPtr();
+
+    for (int i = 0; i < num_points_; i++) {
+      if (pts_optim_iter_[i] > 0) {
+        const double* point = points + i * point_block_size_;
+        double dist = sqrt(point[0]*point[0] + point[1]*point[1] + point[2]*point[2]);
+        avg_point_distance += dist;
+        valid_points++;
+      }
+    }
+
+    if (valid_points > 0) {
+      avg_point_distance /= valid_points;
+    }
+
+    // Check the average distance of cameras
+    double avg_camera_distance = 0.0;
+    int valid_cameras = 0;
+    for (int i = 0; i < num_cam_poses_; i++) {
+      if (cam_pose_optim_iter_[i] > 0) {
+        double* camera = cameraBlockPtr(i);
+        double dist = sqrt(camera[3]*camera[3] + camera[4]*camera[4] + camera[5]*camera[5]);
+        avg_camera_distance += dist;
+        valid_cameras++;
+      }
+    }
+
+    if (valid_cameras > 0) {
+      avg_camera_distance /= valid_cameras;
+    }
+
+    // Thresholds for divergence
+    const double MAX_POINT_DISTANCE_THRESHOLD = 100.0;
+    const double MAX_CAMERA_DISTANCE_THRESHOLD = 100.0;
+
+    // Check if the average distances exceed the thresholds
+    // If they do, the reconstruction might be diverging
+    if (avg_point_distance > MAX_POINT_DISTANCE_THRESHOLD || 
+        avg_camera_distance > MAX_CAMERA_DISTANCE_THRESHOLD) {
+      std::cout << "Reconstruction appears to be diverging. Restarting with a new seed pair." << std::endl;
+      return false;
+    }
+
+    // If the number of valid points are few the reconstruction might be diverging
+    if (valid_points < 20 && iter > 3) {
+      std::cout << "Too few valid points remaining. Restarting with a new seed pair." << std::endl;
+      return false;
+    }
+
+    // If the number of rejected points is high, the reconstruction is difficult
+    int rejected_points = 0;
+    for (int i = 0; i < num_points_; i++) {
+      if (pts_optim_iter_[i] == -1) {
+        rejected_points++;
+      }
+    }
+
+    if (rejected_points > 0 && valid_points > 0 && 
+        static_cast<double>(rejected_points) / (rejected_points + valid_points) > 0.5) {
+      std::cout << "Too many points rejected. Restarting with a new seed pair." << std::endl;
+      return false;
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////
