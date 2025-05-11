@@ -1131,7 +1131,7 @@ void BasicSfM::bundleAdjustmentIter(int new_cam_idx)
   ceres::Solver::Options options;
   options.linear_solver_type = ceres::DENSE_SCHUR;
   options.minimizer_progress_to_stdout = false;
-  options.num_threads = 1; //TODO repalace to original 4
+  options.num_threads = 4; 
   options.max_num_iterations = 200;
 
   std::vector<double> bck_parameters;
