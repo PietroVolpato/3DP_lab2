@@ -29,11 +29,17 @@ For the provided datasets, set the focal lenght scale to 1.1, e.g.:
 ./basic_sfm ../data1.txt ../cloud1.ply
 ./basic_sfm ../data2.txt ../cloud2.ply
 
-Our dataset
+# Our datasets
+
 Dataset 1: gnome
+
 Commands to run from the bin folder 
-./matcher ../datasets/cam_cal_1.yml ../datasets/our_dataset_1 ../our_data_1.txt 1.1
-./basic_sfm ../our_data_1.txt ../our_cloud_1.ply 
+./matcher ../datasets/gnome_cam.yml ../datasets/gnome_dataset ../gnome_data.txt 1.1
+./basic_sfm ../gnome_data.txt ../cloud_gnome.ply 
 
 Then to visualize the reconstruction, run from the root folder:
-meshlab our_cloud_1.ply
+meshlab cloud_gnome.ply
+
+Dataset 2: angel
+
+
