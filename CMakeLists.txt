@@ -33,3 +33,6 @@ set_target_properties(matcher PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOUR
 add_executable(basic_sfm src/sfm_app.cpp)
 target_link_libraries(basic_sfm ${PROJECT_NAME})
 set_target_properties(basic_sfm PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
+
+# add_executable(resize_images src/resize_images.cpp)
+# target_link_libraries(resize_images ${PROJECT_NAME})
