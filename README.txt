@@ -41,5 +41,8 @@ Then to visualize the reconstruction, run from the root folder:
 meshlab cloud_gnome.ply
 
 Dataset 2: angel
+./matcher ../datasets/Pietro_cam.yml ../datasets/angel_dataset ../angel_data.txt 1.1
+./basic_sfm ../angel_data_data.txt ../cloud_angel.ply 
 
-
+To visualize:
+meshlab cloud_angel.ply
